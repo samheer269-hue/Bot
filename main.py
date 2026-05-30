@@ -24,44 +24,62 @@ Thread(target=run_fake_server, daemon=True).start()
 # --- ENVIRONMENT VARIABLES ---
 API_ID = int(os.environ.get("API_ID", 32571771))
 API_HASH = os.environ.get("API_HASH", "aaa4fc6eccc428e8ef2baa5e894d92f8")
-SESSION_STRING = os.environ.get("SESSION_STRING")
+SESSION_STRING = os.environ.get("SESSION_STRING", "")
 
 app = Client(
     "my_userbot",
     api_id=API_ID,
     api_hash=API_HASH,
-    session_string=SESSION_STRING.strip(),
+    session_string=SESSION_STRING.strip() if SESSION_STRING else None,
     in_memory=True
 )
 
-# In-Memory Database
+# In-Memory Database (Ab isme pure message objects save honge)
 shortcuts_db = {}
 user_states = {}
 
 @app.on_message()
 async def handle_all_messages(client, message: Message):
-    if not message.text:
-        return
+    # Text ya Caption dono me se kuch ek hona chahiye process karne ke liye
+    if not message.text and not message.caption:
+        # Agar state me waiting hai toh bina text ke bhi media accept karenge
+        if not (message.from_user and message.from_user.is_self and message.from_user.id in user_states):
+            return
         
     if not message.from_user or not message.from_user.is_self:
         return
 
-    text = message.text.strip()
+    # Check karne ke liye ki text hai ya caption
+    raw_text = message.text or message.caption or ""
+    text = raw_text.strip()
     user_id = message.from_user.id
     chat_id = message.chat.id
 
+    # --- HANDLING SAVE STATE (Must come first to intercept incoming text/media) ---
+    if user_id in user_states and user_states[user_id]["action"] == "waiting_for_msg":
+        shortcut_name = user_states[user_id]["shortcut_name"]
+        
+        # Pure message object ko save kar rhe hain taaki photo/video/text sab save ho jaye
+        shortcuts_db[shortcut_name] = message
+        del user_states[user_id]
+        
+        # Delete your input message and send a fresh confirmation
+        await message.delete()
+        await client.send_message(chat_id, f"✅ **Saved successfully!**\nYou can now use `.{shortcut_name}` anywhere.")
+        return
+
     # --- COMMAND 1: .alive ---
     if text.lower() == ".alive":
-        await message.edit_text("✨ **Zyron Userbot is Active and Running Smoothly!**")
+        await message.edit_text("✨ Zyron Userbot is Active and Running Smoothly!")
         return
 
     # --- COMMAND 2: .list ---
     if text.lower() == ".list":
         if not shortcuts_db:
-            await message.edit_text("❌ **No shortcuts found!** Use `.add <name>` to create one.")
+            await message.edit_text("❌ No shortcuts found! Use `.add <name>` to create one.")
         else:
-            shortcuts_list = "\n".join([f"🔹 `.{k}`" for k in shortcuts_db.keys()])
-            await message.edit_text(f"📝 **Your Saved Shortcuts:**\n\n{shortcuts_list}")
+            shortcuts_list = "\n".join([f"🔹 .{k}" for k in shortcuts_db.keys()])
+            await message.edit_text(f"📋 **Your Saved Shortcuts:**\n\n{shortcuts_list}")
         return
 
     # --- COMMAND 3: .del <name> ---
@@ -78,38 +96,29 @@ async def handle_all_messages(client, message: Message):
         return
 
     # --- COMMAND 4: .add <name> ---
-    if text.startswith(".add ") or text.startswith("/add "):
+    if text.startswith(".a ") or text.startswith("/a "):
         try:
             shortcut_name = text.split(" ", 1)[1].lower()
             user_states[user_id] = {"action": "waiting_for_msg", "shortcut_name": shortcut_name}
-            await message.edit_text(f"📝 **Send the message you want to save for** `.{shortcut_name}`\n*(Bold, Mono, Italic formatting is fully supported)*")
-            return
+            await message.edit_text(f"📝 **Send the message/photo you want to save for `.{shortcut_name}`**\n*(Photo, Media, and formatting are fully supported)*")
         except Exception as e:
             logger.error(f"Error in add command: {e}")
-            return
-
-    # --- HANDLING SAVE STATE ---
-    if user_id in user_states and user_states[user_id]["action"] == "waiting_for_msg":
-        shortcut_name = user_states[user_id]["shortcut_name"]
-        
-        # Storing markdown text safely
-        shortcuts_db[shortcut_name] = message.text.markdown
-        del user_states[user_id]
-        await message.reply_text(f"✅ **Saved successfully!**\nYou can now use `.{shortcut_name}` anywhere.")
         return
 
     # --- TRIGGERING THE SHORTCUT ---
     if text.startswith("."):
         shortcut_trigger = text[1:].lower()
         if shortcut_trigger in shortcuts_db:
-            saved_reply = shortcuts_db[shortcut_trigger]
+            saved_message = shortcuts_db[shortcut_trigger]
             
-            # Sending first then deleting to avoid blank message/send failure issues
-            await client.send_message(chat_id, saved_reply)
+            reply_to_id = message.reply_to_message.id if message.reply_to_message else None
+            
+            # copy() use karne se text ho ya photo, caption ke sath sahi se send ho jata hai
+            await saved_message.copy(chat_id, reply_to_message_id=reply_to_id)
             await message.delete()
             return
 
 if __name__ == "__main__":
     logger.info("Starting Fully Loaded Userbot...")
     app.run()
-                                        
+    
