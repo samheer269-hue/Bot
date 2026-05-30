@@ -3,7 +3,7 @@ import logging
 import asyncio
 from threading import Thread
 from http.server import SimpleHTTPRequestHandler, HTTPServer
-from pyrogram import Client, filters
+from pyrogram import Client
 from pyrogram.types import Message
 
 logging.basicConfig(level=logging.INFO)
@@ -27,7 +27,6 @@ API_ID = int(os.environ.get("API_ID", 3257177))
 API_HASH = os.environ.get("API_HASH", "aaa4fc6eccc428e8ef2baa5e894d92f8")
 SESSION_STRING = os.environ.get("SESSION_STRING")
 
-# Shortcuts database in memory
 shortcuts_db = {}
 user_states = {}
 
@@ -38,11 +37,15 @@ app = Client(
     session_string=SESSION_STRING
 )
 
-# --- USERBOT HANDLER (Version-Independent Filters) ---
-# Yahan humne filters.me hata kar code ke andar manually check kiya hai taaki crash na ho
-@app.on_message(filters.text & ~filters.edited)
-async def handle_my_messages(client, message: Message):
-    # Sirf tabhi kaam karega jab message AAPNE khud bheja ho
+# --- BINA FILTERS KE RAW HANDLER ---
+# Ab koi filter nahi hai, toh Pyrogram version crash kabhi nahi hoga!
+@app.on_message()
+async def handle_all_messages(client, message: Message):
+    # Check 1: Kya message me text hai? (Media messages ko ignore karega)
+    if not message.text:
+        return
+        
+    # Check 2: Kya message sirf AAPNE bheja hai?
     if not message.from_user or not message.from_user.is_self:
         return
 
@@ -54,7 +57,7 @@ async def handle_my_messages(client, message: Message):
         try:
             shortcut_name = text.split(" ", 1)[1].lower()
             user_states[user_id] = {"action": "waiting_for_msg", "shortcut_name": shortcut_name}
-            await message.edit_text(f"📝 **Send message for add:**\nAb wo message bhejiye jo `.{shortcut_name}` par save karna hai (Formatting bold/mono sab support hai).")
+            await message.edit_text(f"📝 **Send message for add:**\nAb wo message bhejiye jo `.{shortcut_name}` par save karna hai (Formatting bold/mono sab chalega).")
             return
         except Exception as e:
             logger.error(f"Error in add command: {e}")
