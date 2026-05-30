@@ -1,27 +1,36 @@
 import os
-import sqlite3
+import logging
 from pyrogram import Client, filters
 from pyrogram.types import Message
 
-# Environments variables se data nikalna (Railway par set karenge)
-API_ID = int(os.environ.get("API_ID", 3257177))
-API_HASH = os.environ.get("API_HASH", "aaa4fc6eccc428e8ef2baa5e894d92f8")
-SESSION_STRING = os.environ.get("SESSION_STRING")
+# Logging setup (Railway logs me sab dikhne ke liye)
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger("Userbot")
 
-# Database Setup (Taaki data save rahe)
-db_path = "shortcuts.db"
-conn = sqlite3.connect(db_path, check_same_thread=False)
-cursor = conn.cursor()
-cursor.execute("CREATE TABLE IF NOT EXISTS notes (keyword TEXT UNIQUE, reply TEXT)")
-conn.commit()
+# Environment variables se data nikalna
+try:
+    API_ID = int(os.environ.get("API_ID", 3257177))
+    API_HASH = os.environ.get("API_HASH", "aaa4fc6eccc428e8ef2baa5e894d92f8")
+    SESSION_STRING = os.environ.get("SESSION_STRING")
+except Exception as e:
+    logger.error(f"Error loading environment variables: {e}")
 
-# Userbot Client Initialization
-app = Client("my_userbot", api_id=API_ID, api_hash=API_HASH, session_string=SESSION_STRING)
+if not SESSION_STRING:
+    logger.critical("SESSION_STRING missing hai! Railway variables me check karein.")
 
-# State tracker temporary memory me rakhne ke liye
+# Shortcuts ko temporary memory me save karne ke liye dictionary
+shortcuts_db = {}
 user_states = {}
 
-# --- COMMAND: .add (Sirf aapke liye kaam karega) ---
+# Client initialize karna
+app = Client(
+    "my_userbot",
+    api_id=API_ID,
+    api_hash=API_HASH,
+    session_string=SESSION_STRING
+)
+
+# --- COMMAND: .add ya /add (Sirf aapke account se chalega) ---
 @app.on_message(filters.command("add", prefixes=[".", "/"]) & filters.me)
 async def add_shortcut(client, message: Message):
     if len(message.command) < 2:
@@ -29,11 +38,13 @@ async def add_shortcut(client, message: Message):
         return
     
     shortcut_name = message.command[1].lower()
-    user_states[message.from_user.id] = {"action": "waiting_for_msg", "shortcut_name": shortcut_name}
+    user_id = message.from_user.id
     
-    await message.edit_text(f"📝 Reply ya Send karein wo message jo `.{shortcut_name}` ke liye save karna hai:")
+    # State set karna ki ab agla message save karna hai
+    user_states[user_id] = {"action": "waiting_for_msg", "shortcut_name": shortcut_name}
+    await message.edit_text(f"📝 **Send message for add:**\nAb wo message bhejiye ya reply kijiye jise `.{shortcut_name}` par save karna hai.")
 
-# --- SAVING MESSAGE ---
+# --- MESSAGE HANDLER: Agla message save karna ---
 @app.on_message(filters.me & ~filters.command(["add"]))
 async def save_message(client, message: Message):
     user_id = message.from_user.id
@@ -42,16 +53,16 @@ async def save_message(client, message: Message):
         shortcut_name = user_states[user_id]["shortcut_name"]
         
         if message.text:
-            # Database me save/update karna
-            cursor.execute("INSERT OR REPLACE INTO notes (keyword, reply) VALUES (?, ?)", (shortcut_name, message.text))
-            conn.commit()
-            await message.reply_text(f"✅ Saved! Now whenever you type `.{shortcut_name}`, it will trigger.")
+            # Memory me save ho raha hai
+            shortcuts_db[shortcut_name] = message.text
+            await message.reply_text(f"✅ **Saved successfully!**\nAb jab bhi aap `.{shortcut_name}` likhenge, ye message chala jayega.")
         else:
-            await message.reply_text("❌ Only text messages are supported currently.")
+            await message.reply_text("❌ Abhi sirf text messages supported hain.")
         
+        # State clear karna
         del user_states[user_id]
 
-# --- TRIGGER: Jab aap chat me '.sam' likhein ---
+# --- TRIGGER: Jab aap chat/DM me '.sam' likhein ---
 @app.on_message(filters.text & filters.me & ~filters.edited)
 async def trigger_shortcut(client, message: Message):
     text = message.text.strip()
@@ -59,16 +70,14 @@ async def trigger_shortcut(client, message: Message):
     if text.startswith("."):
         shortcut_trigger = text[1:].lower()
         
-        # Database se check karna
-        cursor.execute("SELECT reply FROM notes WHERE keyword=?", (shortcut_trigger,))
-        row = cursor.fetchone()
-        
-        if row:
-            # Pehle '.sam' wale message ko delete karega fir saved text bhejega
+        if shortcut_trigger in shortcuts_db:
+            saved_reply = shortcuts_db[shortcut_trigger]
+            # Purane '.sam' wale message ko delete karega taaki ganda na lage
             await message.delete()
-            await client.send_message(message.chat.id, row[0])
+            # Naya saved message aapki ID se bhej dega
+            await client.send_message(message.chat.id, saved_reply)
 
 if __name__ == "__main__":
-    print("Userbot starting...")
+    logger.info("Userbot start ho raha hai...")
     app.run()
-            
+    
