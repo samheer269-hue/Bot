@@ -3,24 +3,24 @@ import logging
 import asyncio
 from threading import Thread
 from http.server import SimpleHTTPRequestHandler, HTTPServer
-from telethon import TelegramClient, events
+from telethon import TelegramClient
+from telethon.sessions import StringSession
+from telethon import events
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("Userbot")
 
 # --- RAILWAY AUTO-PORT FIX ---
-# Ye code Railway ke port ko verify karega taaki status kabhi 'Crashed' na aaye
 def run_fake_server():
     port = int(os.environ.get("PORT", 8080))
     server_address = ('', port)
     try:
         httpd = HTTPServer(server_address, SimpleHTTPRequestHandler)
-        logger.info(f"Railway verification active on port {port}")
+        logger.info(f"Railway port verification active on port {port}")
         httpd.serve_forever()
     except Exception as e:
         logger.error(f"Server error: {e}")
 
-# Background me server start karna
 Thread(target=run_fake_server, daemon=True).start()
 
 # --- ENVIRONMENT VARIABLES ---
@@ -28,9 +28,16 @@ API_ID = int(os.environ.get("API_ID", 32571771))
 API_HASH = os.environ.get("API_HASH", "aaa4fc6eccc428e8ef2baa5e894d92f8")
 SESSION_STRING = os.environ.get("SESSION_STRING")
 
-# Telethon Client Initialization
+if not SESSION_STRING:
+    logger.critical("❌ CRITICAL ERROR: SESSION_STRING Railway ke Variables me nahi mili!")
+    # Server ko crash hone se bachane ke liye infinite loop
+    while True:
+        import time
+        time.sleep(3600)
+
+# Telethon StringSession Initialization (Ab ye phone number nahi mangega)
 bot = TelegramClient(
-    None, 
+    StringSession(SESSION_STRING.strip()), 
     api_id=API_ID, 
     api_hash=API_HASH
 )
@@ -55,7 +62,7 @@ async def handle_messages(event):
             await event.edit(f"📝 **Send message for add:**\nAb wo message bhejiye jo `.{shortcut_name}` par save karna hai (Bold, Mono, Italic sab support hai).")
             return
         except Exception as e:
-            logger.error(f"Error: {e}")
+            logger.error(f"Error in add command: {e}")
             return
 
     # 2. SAVING WITH FORMATTING
@@ -76,8 +83,7 @@ async def handle_messages(event):
         shortcut_trigger = text[1:].lower()
         if shortcut_trigger in shortcuts_db:
             saved_data = shortcuts_db[shortcut_trigger]
-            
-            await event.delete() # Purana .sam delete karna
+            await event.delete() # Purana .sam delete
             
             await bot.send_message(
                 chat_id, 
@@ -88,11 +94,20 @@ async def handle_messages(event):
 
 async def main():
     logger.info("Starting Telethon Userbot...")
-    await bot.start()
-    logger.info("Userbot is online and running successfully!")
+    # .start() ke badle connect() use kar rahe hain taaki login check na kare
+    await bot.connect()
+    if not await bot.is_user_authorized():
+        logger.critical("❌ ERROR: Aapki SESSION_STRING galat hai ya expire ho chuki hai! Phone number required.")
+        return
+    logger.info("✅ Userbot is successfully online and authorized!")
     await bot.run_until_disconnected()
 
 if __name__ == "__main__":
-    # Python 3.13 async handle fix
-    asyncio.run(main())
-    
+    try:
+        asyncio.run(main())
+    except Exception as e:
+        logger.error(f"Unexpected error: {e}")
+        while True:
+            import time
+            time.sleep(3600)
+            
