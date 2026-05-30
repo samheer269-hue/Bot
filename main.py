@@ -1,6 +1,5 @@
 import os
 import logging
-import asyncio
 from threading import Thread
 from http.server import SimpleHTTPRequestHandler, HTTPServer
 from pyrogram import Client
@@ -27,7 +26,6 @@ API_ID = int(os.environ.get("API_ID", 32571771))
 API_HASH = os.environ.get("API_HASH", "aaa4fc6eccc428e8ef2baa5e894d92f8")
 SESSION_STRING = os.environ.get("SESSION_STRING")
 
-# Storage session error se bachne ke liye in_memory=True kiya hai
 app = Client(
     "my_userbot",
     api_id=API_ID,
@@ -36,52 +34,82 @@ app = Client(
     in_memory=True
 )
 
+# In-Memory Database
 shortcuts_db = {}
 user_states = {}
 
-# --- BINA FILTERS KE RAW HANDLER ---
 @app.on_message()
 async def handle_all_messages(client, message: Message):
-    # Check 1: Text hona chahiye
     if not message.text:
         return
         
-    # Check 2: Sirf aapka message hona chahiye
     if not message.from_user or not message.from_user.is_self:
         return
 
     text = message.text.strip()
     user_id = message.from_user.id
+    chat_id = message.chat.id
 
-    # 1. COMMAND: .add sam
+    # --- COMMAND 1: .alive ---
+    if text.lower() == ".alive":
+        await message.edit_text("✨ **Zyron Userbot is Active and Running Smoothly!**")
+        return
+
+    # --- COMMAND 2: .list ---
+    if text.lower() == ".list":
+        if not shortcuts_db:
+            await message.edit_text("❌ **No shortcuts found!** Use `.add <name>` to create one.")
+        else:
+            shortcuts_list = "\n".join([f"🔹 `.{k}`" for k in shortcuts_db.keys()])
+            await message.edit_text(f"📝 **Your Saved Shortcuts:**\n\n{shortcuts_list}")
+        return
+
+    # --- COMMAND 3: .del <name> ---
+    if text.startswith(".del "):
+        try:
+            shortcut_name = text.split(" ", 1)[1].lower()
+            if shortcut_name in shortcuts_db:
+                del shortcuts_db[shortcut_name]
+                await message.edit_text(f"✅ Shortcut `.{shortcut_name}` has been deleted successfully.")
+            else:
+                await message.edit_text(f"❌ Shortcut `.{shortcut_name}` not found!")
+        except Exception as e:
+            logger.error(f"Error in del command: {e}")
+        return
+
+    # --- COMMAND 4: .add <name> ---
     if text.startswith(".add ") or text.startswith("/add "):
         try:
             shortcut_name = text.split(" ", 1)[1].lower()
             user_states[user_id] = {"action": "waiting_for_msg", "shortcut_name": shortcut_name}
-            await message.edit_text(f"📝 **Send message for add:**\nAb wo message bhejiye jo `.{shortcut_name}` par save karna hai (Bold, Mono, Italic sab support hai).")
+            await message.edit_text(f"📝 **Send the message you want to save for** `.{shortcut_name}`\n*(Bold, Mono, Italic formatting is fully supported)*")
             return
         except Exception as e:
             logger.error(f"Error in add command: {e}")
             return
 
-    # 2. SAVING WITH FORMATTING
+    # --- HANDLING SAVE STATE ---
     if user_id in user_states and user_states[user_id]["action"] == "waiting_for_msg":
         shortcut_name = user_states[user_id]["shortcut_name"]
+        
+        # Storing markdown text safely
         shortcuts_db[shortcut_name] = message.text.markdown
         del user_states[user_id]
-        await message.reply_text(f"✅ **Saved successfully!**\nAb aap `.{shortcut_name}` use kar sakte hain.")
+        await message.reply_text(f"✅ **Saved successfully!**\nYou can now use `.{shortcut_name}` anywhere.")
         return
 
-    # 3. TRIGGER: .sam
+    # --- TRIGGERING THE SHORTCUT ---
     if text.startswith("."):
         shortcut_trigger = text[1:].lower()
         if shortcut_trigger in shortcuts_db:
             saved_reply = shortcuts_db[shortcut_trigger]
-            await message.delete()  # Purana .sam delete
-            await client.send_message(message.chat.id, saved_reply, parse_mode="markdown")
+            
+            # Sending first then deleting to avoid blank message/send failure issues
+            await client.send_message(chat_id, saved_reply)
+            await message.delete()
             return
 
 if __name__ == "__main__":
-    logger.info("Starting Pyrogram Userbot...")
+    logger.info("Starting Fully Loaded Userbot...")
     app.run()
-    
+                                        
