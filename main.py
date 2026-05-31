@@ -34,7 +34,7 @@ app = Client(
     in_memory=True
 )
 
-# In-Memory Database (Ab isme pure message objects save honge)
+# In-Memory Database (Isme chat_id aur message_id save hogi stable photo fetch ke liye)
 shortcuts_db = {}
 user_states = {}
 
@@ -55,15 +55,18 @@ async def handle_all_messages(client, message: Message):
     user_id = message.from_user.id
     chat_id = message.chat.id
 
-    # --- HANDLING SAVE STATE (Must come first to intercept incoming text/media) ---
+    # --- HANDLING SAVE STATE ---
     if user_id in user_states and user_states[user_id]["action"] == "waiting_for_msg":
         shortcut_name = user_states[user_id]["shortcut_name"]
         
-        # Pure message object ko save kar rhe hain taaki photo/video/text sab save ho jaye
-        shortcuts_db[shortcut_name] = message
+        # Stability fix: Photo baar-baar gayab na ho, isliye chat_id aur message_id structure save kiya
+        shortcuts_db[shortcut_name] = {
+            "chat_id": message.chat.id,
+            "message_id": message.id
+        }
         del user_states[user_id]
         
-        # Delete your input message and send a fresh confirmation
+        # Fresh confirmation message
         await message.delete()
         await client.send_message(chat_id, f"✅ **Saved successfully!**\nYou can now use `.{shortcut_name}` anywhere.")
         return
@@ -76,7 +79,7 @@ async def handle_all_messages(client, message: Message):
     # --- COMMAND 2: .list ---
     if text.lower() == ".list":
         if not shortcuts_db:
-            await message.edit_text("❌ No shortcuts found! Use `.add <name>` to create one.")
+            await message.edit_text("❌ No shortcuts found! Use `.a <name>` to create one.")
         else:
             shortcuts_list = "\n".join([f"🔹 .{k}" for k in shortcuts_db.keys()])
             await message.edit_text(f"📋 **Your Saved Shortcuts:**\n\n{shortcuts_list}")
@@ -85,7 +88,7 @@ async def handle_all_messages(client, message: Message):
     # --- COMMAND 3: .del <name> ---
     if text.startswith(".del "):
         try:
-            shortcut_name = text.split(" ", 1)[1].lower()
+            shortcut_name = text.split(" ", 1)[1].lower().strip()
             if shortcut_name in shortcuts_db:
                 del shortcuts_db[shortcut_name]
                 await message.edit_text(f"✅ Shortcut `.{shortcut_name}` has been deleted successfully.")
@@ -95,10 +98,10 @@ async def handle_all_messages(client, message: Message):
             logger.error(f"Error in del command: {e}")
         return
 
-    # --- COMMAND 4: .add <name> ---
+    # --- COMMAND 4: .a <name> ---
     if text.startswith(".a ") or text.startswith("/a "):
         try:
-            shortcut_name = text.split(" ", 1)[1].lower()
+            shortcut_name = text.split(" ", 1)[1].lower().strip()
             user_states[user_id] = {"action": "waiting_for_msg", "shortcut_name": shortcut_name}
             await message.edit_text(f"📝 **Send the message/photo you want to save for `.{shortcut_name}`**\n*(Photo, Media, and formatting are fully supported)*")
         except Exception as e:
@@ -107,18 +110,27 @@ async def handle_all_messages(client, message: Message):
 
     # --- TRIGGERING THE SHORTCUT ---
     if text.startswith("."):
-        shortcut_trigger = text[1:].lower()
+        shortcut_trigger = text[1:].lower().strip()
         if shortcut_trigger in shortcuts_db:
-            saved_message = shortcuts_db[shortcut_trigger]
-            
+            data = shortcuts_db[shortcut_trigger]
             reply_to_id = message.reply_to_message.id if message.reply_to_message else None
             
-            # copy() use karne se text ho ya photo, caption ke sath sahi se send ho jata hai
-            await saved_message.copy(chat_id, reply_to_message_id=reply_to_id)
-            await message.delete()
+            try:
+                # Naya message send karne ki jagah pehle purane ko delete karke direct fetch karega
+                await message.delete()
+                
+                await client.copy_message(
+                    chat_id=chat_id,
+                    from_chat_id=data["chat_id"],
+                    message_id=data["message_id"],
+                    reply_to_message_id=reply_to_id
+                )
+            except Exception as e:
+                logger.error(f"Error in sending shortcut: {e}")
+                # Agar error aaye toh naya status send hoga, taaki system crash na ho
+                await client.send_message(chat_id, f"❌ **Error:** Unable to fetch `.{shortcut_trigger}`. original message shayad delete ho gaya hai.")
             return
 
 if __name__ == "__main__":
     logger.info("Starting Fully Loaded Userbot...")
     app.run()
-    
