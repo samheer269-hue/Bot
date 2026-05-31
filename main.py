@@ -8,7 +8,6 @@ from pyrogram.types import Message
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("Userbot")
 
-# --- RAILWAY AUTO-PORT FIX ---
 def run_fake_server():
     port = int(os.environ.get("PORT", 8080))
     server_address = ('', port)
@@ -21,7 +20,6 @@ def run_fake_server():
 
 Thread(target=run_fake_server, daemon=True).start()
 
-# --- ENVIRONMENT VARIABLES ---
 API_ID = int(os.environ.get("API_ID", 32571771))
 API_HASH = os.environ.get("API_HASH", "aaa4fc6eccc428e8ef2baa5e894d92f8")
 SESSION_STRING = os.environ.get("SESSION_STRING", "")
@@ -34,91 +32,144 @@ app = Client(
     in_memory=True
 )
 
-# In-Memory Database (Isme chat_id aur message_id save hogi stable photo fetch ke liye)
 shortcuts_db = {}
 user_states = {}
 
+async def safe_reply(client, message, text):
+    if message.text:
+        try:
+            await message.edit_text(text)
+            return
+        except Exception as e:
+            logger.error(f"Edit failed: {e}")
+    else:
+        try:
+            await message.edit_caption(text)
+            return
+        except Exception as e:
+            logger.error(f"Caption edit failed: {e}")
+    logger.warning("Could not respond — slow mode or media restriction.")
+
 @app.on_message()
 async def handle_all_messages(client, message: Message):
-    # Text ya Caption dono me se kuch ek hona chahiye process karne ke liye
-    if not message.text and not message.caption:
-        # Agar state me waiting hai toh bina text ke bhi media accept karenge
-        if not (message.from_user and message.from_user.is_self and message.from_user.id in user_states):
-            return
-        
     if not message.from_user or not message.from_user.is_self:
         return
 
-    # Check karne ke liye ki text hai ya caption
-    raw_text = message.text or message.caption or ""
-    text = raw_text.strip()
     user_id = message.from_user.id
     chat_id = message.chat.id
+    raw_text = message.text or message.caption or ""
+    text = raw_text.strip()
 
-    # --- HANDLING SAVE STATE ---
+    # --- STATE: WAITING FOR MESSAGE TO SAVE ---
     if user_id in user_states and user_states[user_id]["action"] == "waiting_for_msg":
         shortcut_name = user_states[user_id]["shortcut_name"]
-        
-        # Stability fix: Photo baar-baar gayab na ho, isliye chat_id aur message_id structure save kiya
         shortcuts_db[shortcut_name] = {
             "chat_id": message.chat.id,
             "message_id": message.id
         }
         del user_states[user_id]
-        
-        # Fresh confirmation message
-        await message.delete()
-        await client.send_message(chat_id, f"✅ **Saved successfully!**\nYou can now use `.{shortcut_name}` anywhere.")
+        await safe_reply(client, message, f"✅ **Saved!** Use `.{shortcut_name}` anywhere.")
         return
 
-    # --- COMMAND 1: .alive ---
+    if not text:
+        return
+
+    # --- .alive ---
     if text.lower() == ".alive":
-        await message.edit_text("✨ Zyron Userbot is Active and Running Smoothly!")
+        await safe_reply(client, message, "✨ **Zyron Userbot** is Active and Running Smoothly!")
         return
 
-    # --- COMMAND 2: .list ---
+    # --- .help ---
+    if text.lower() == ".help":
+        help_text = (
+            "🤖 **Zyron Userbot — Commands**\n\n"
+            "`.alive` — Check bot status\n"
+            "`.a <name>` — Create a new shortcut\n"
+            "`.list` — View all shortcuts\n"
+            "`.del <name>` — Delete a shortcut\n"
+            "`.rename <old> <new>` — Rename a shortcut\n"
+            "`.clear` — Delete all shortcuts\n"
+            "`.help` — Show this menu\n\n"
+            "**To use a shortcut:** Just type `.name` and the saved message/media will be sent."
+        )
+        await safe_reply(client, message, help_text)
+        return
+
+    # --- .list ---
     if text.lower() == ".list":
         if not shortcuts_db:
-            await message.edit_text("❌ No shortcuts found! Use `.a <name>` to create one.")
+            msg = "❌ No shortcuts found! Use `.a <name>` to create one."
         else:
-            shortcuts_list = "\n".join([f"🔹 .{k}" for k in shortcuts_db.keys()])
-            await message.edit_text(f"📋 **Your Saved Shortcuts:**\n\n{shortcuts_list}")
+            shortcuts_list = "\n".join([f"🔹 `.{k}`" for k in shortcuts_db.keys()])
+            msg = f"📋 **Your Saved Shortcuts ({len(shortcuts_db)}):**\n\n{shortcuts_list}"
+        await safe_reply(client, message, msg)
         return
 
-    # --- COMMAND 3: .del <name> ---
+    # --- .clear ---
+    if text.lower() == ".clear":
+        count = len(shortcuts_db)
+        if count == 0:
+            await safe_reply(client, message, "❌ No shortcuts to clear!")
+        else:
+            shortcuts_db.clear()
+            await safe_reply(client, message, f"🗑️ **{count} shortcut(s) deleted!** Database cleared.")
+        return
+
+    # --- .del <name> ---
     if text.startswith(".del "):
         try:
             shortcut_name = text.split(" ", 1)[1].lower().strip()
             if shortcut_name in shortcuts_db:
                 del shortcuts_db[shortcut_name]
-                await message.edit_text(f"✅ Shortcut `.{shortcut_name}` has been deleted successfully.")
+                msg = f"✅ `.{shortcut_name}` deleted successfully."
             else:
-                await message.edit_text(f"❌ Shortcut `.{shortcut_name}` not found!")
+                msg = f"❌ `.{shortcut_name}` not found!"
         except Exception as e:
-            logger.error(f"Error in del command: {e}")
+            logger.error(f"Del error: {e}")
+            msg = "❌ An error occurred."
+        await safe_reply(client, message, msg)
         return
 
-    # --- COMMAND 4: .a <name> ---
+    # --- .rename <old> <new> ---
+    if text.startswith(".rename "):
+        try:
+            parts = text.split(" ")
+            if len(parts) < 3:
+                await safe_reply(client, message, "⚠️ Usage: `.rename <old_name> <new_name>`")
+                return
+            old_name = parts[1].lower().strip()
+            new_name = parts[2].lower().strip()
+            if old_name not in shortcuts_db:
+                await safe_reply(client, message, f"❌ `.{old_name}` not found!")
+                return
+            if new_name in shortcuts_db:
+                await safe_reply(client, message, f"❌ `.{new_name}` already exists! Delete it first.")
+                return
+            shortcuts_db[new_name] = shortcuts_db.pop(old_name)
+            await safe_reply(client, message, f"✅ `.{old_name}` renamed to `.{new_name}` successfully.")
+        except Exception as e:
+            logger.error(f"Rename error: {e}")
+            await safe_reply(client, message, "❌ An error occurred.")
+        return
+
+    # --- .a <name> ---
     if text.startswith(".a ") or text.startswith("/a "):
         try:
             shortcut_name = text.split(" ", 1)[1].lower().strip()
             user_states[user_id] = {"action": "waiting_for_msg", "shortcut_name": shortcut_name}
-            await message.edit_text(f"📝 **Send the message/photo you want to save for `.{shortcut_name}`**\n*(Photo, Media, and formatting are fully supported)*")
+            await safe_reply(client, message, f"📝 **Send the message or photo to save as `.{shortcut_name}`**\n*(Supports photos, media, and formatting)*")
         except Exception as e:
-            logger.error(f"Error in add command: {e}")
+            logger.error(f"Add error: {e}")
         return
 
-    # --- TRIGGERING THE SHORTCUT ---
+    # --- SHORTCUT TRIGGER ---
     if text.startswith("."):
         shortcut_trigger = text[1:].lower().strip()
         if shortcut_trigger in shortcuts_db:
             data = shortcuts_db[shortcut_trigger]
             reply_to_id = message.reply_to_message.id if message.reply_to_message else None
-            
             try:
-                # Naya message send karne ki jagah pehle purane ko delete karke direct fetch karega
                 await message.delete()
-                
                 await client.copy_message(
                     chat_id=chat_id,
                     from_chat_id=data["chat_id"],
@@ -126,9 +177,11 @@ async def handle_all_messages(client, message: Message):
                     reply_to_message_id=reply_to_id
                 )
             except Exception as e:
-                logger.error(f"Error in sending shortcut: {e}")
-                # Agar error aaye toh naya status send hoga, taaki system crash na ho
-                await client.send_message(chat_id, f"❌ **Error:** Unable to fetch `.{shortcut_trigger}`. original message shayad delete ho gaya hai.")
+                logger.error(f"Shortcut error: {e}")
+                try:
+                    await message.edit_text(f"❌ Could not send `.{shortcut_trigger}`. The original message may have been deleted.")
+                except:
+                    pass
             return
 
 if __name__ == "__main__":
