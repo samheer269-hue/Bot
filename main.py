@@ -1,14 +1,16 @@
 import os
 import logging
+import asyncio
 from threading import Thread
 from http.server import SimpleHTTPRequestHandler, HTTPServer
 from pyrogram import Client, errors
 from pyrogram.types import Message
-import asyncio
 
+# Setup logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("Userbot")
 
+# --- FAKE SERVER FOR UPTIME PINGS ---
 def run_fake_server():
     port = int(os.environ.get("PORT", 8080))
     try:
@@ -20,6 +22,7 @@ def run_fake_server():
 
 Thread(target=run_fake_server, daemon=True).start()
 
+# --- CONFIGURATION ---
 API_ID = int(os.environ.get("API_ID", 0))
 API_HASH = os.environ.get("API_HASH", "")
 SESSION_STRING = os.environ.get("SESSION_STRING", "").strip()
@@ -36,12 +39,15 @@ app = Client(
     in_memory=True
 )
 
+# --- IN-MEMORY DATABASES ---
 shortcuts_db = {}
 user_states = {}
 shortcut_stats = {}
 ME = None
 
+# --- HELPER FUNCTIONS ---
 async def reply(message, text):
+    """Edits text if message has text, otherwise edits the media caption."""
     try:
         if message.text:
             await message.edit_text(text)
@@ -51,6 +57,7 @@ async def reply(message, text):
         logger.error(f"Reply failed: {e}")
 
 async def schedule_send(client, chat_id, name, delay):
+    """Executes deferred message delivery for scheduled shortcuts."""
     await asyncio.sleep(delay)
     if name in shortcuts_db:
         data = shortcuts_db[name]
@@ -64,13 +71,16 @@ async def schedule_send(client, chat_id, name, delay):
         except Exception as e:
             logger.error(f"Schedule error: {e}")
 
+# --- MAIN MESSAGE HANDLER ---
 @app.on_message()
 async def handle(client, message: Message):
     global ME
     try:
+        # Ignore messages not sent by yourself
         if not message.from_user or not message.from_user.is_self:
             return
 
+        # Cache your own Telegram User ID
         if ME is None:
             me = await client.get_me()
             ME = me.id
@@ -79,11 +89,12 @@ async def handle(client, message: Message):
         chat_id = message.chat.id
         text = (message.text or message.caption or "").strip()
 
-        # --- SAVE STATE ---
+        # --- STATE MACHINE: SAVE SHORTCUT ---
         if user_id in user_states and user_states[user_id]["action"] == "waiting_for_msg":
             shortcut_name = user_states[user_id]["shortcut_name"]
             del user_states[user_id]
             try:
+                # Mirror message to 'Saved Messages' (your own cloud storage) to make it permanent
                 fwd = await client.copy_message(
                     chat_id=ME,
                     from_chat_id=message.chat.id,
@@ -94,10 +105,12 @@ async def handle(client, message: Message):
                     "saved_msg_id": fwd.id
                 }
                 shortcut_stats[shortcut_name] = 0
-                await reply(message, f"✅ **Saved!** Use `.{shortcut_name}` anywhere.")
+                
+                # Naya text msg send karke confirmation dena fix kiya (Purana delete bug resolved)
+                await client.send_message(chat_id, f"✅ **Saved!** Use `.{shortcut_name}` anywhere.")
             except Exception as e:
                 logger.error(f"Save error: {e}")
-                await reply(message, "❌ Failed to save. Try again.")
+                await client.send_message(chat_id, "❌ Failed to save. Try again.")
             return
 
         if not text:
@@ -159,7 +172,7 @@ async def handle(client, message: Message):
                 await reply(message, f"🗑️ **{count} shortcut(s) cleared!**")
             return
 
-        # --- .c (clear current chat history) ---
+        # --- .c (Clear History) ---
         if text.lower() == ".c":
             try:
                 await message.delete()
@@ -168,7 +181,7 @@ async def handle(client, message: Message):
                 logger.error(f"Clear chat error: {e}")
             return
 
-        # --- .block (block + clear DM + delete tag msg in group) ---
+        # --- .block ---
         if text.lower() == ".block":
             if not message.reply_to_message:
                 await reply(message, "⚠️ Reply to a user's message to block them.")
@@ -178,22 +191,18 @@ async def handle(client, message: Message):
                 await reply(message, "❌ Could not identify user.")
                 return
             try:
-                # Block the user
                 await client.block_user(target.id)
-
-                # Clear DM with that user
                 try:
                     await client.delete_chat_history(target.id)
                 except Exception as e:
                     logger.error(f"DM clear error: {e}")
-
                 await reply(message, f"🚫 **{target.first_name}** blocked and DM cleared.")
             except Exception as e:
                 logger.error(f"Block error: {e}")
                 await reply(message, "❌ Failed to block.")
             return
 
-        # --- .leave (leave current group) ---
+        # --- .leave ---
         if text.lower() == ".leave":
             try:
                 await reply(message, "👋 **Leaving this group...**")
@@ -248,7 +257,7 @@ async def handle(client, message: Message):
             await reply(message, f"✅ `.{old}` → `.{new}`")
             return
 
-        # --- .a ---
+        # --- .a (Assign Shortcut) ---
         if text.startswith(".a "):
             name = text.split(" ", 1)[1].lower().strip()
             if not name:
@@ -258,7 +267,7 @@ async def handle(client, message: Message):
             await reply(message, f"📝 **Send the message or photo to save as `.{name}`**")
             return
 
-        # --- .s ---
+        # --- .s (Schedule Shortcut) ---
         if text.startswith(".s "):
             parts = text.split(" ")
             if len(parts) < 3:
@@ -285,7 +294,7 @@ async def handle(client, message: Message):
                 await reply(message, "❌ Invalid time format.")
             return
 
-        # --- SHORTCUT TRIGGER ---
+        # --- GENERAL SHORTCUT TRIGGER ---
         if text.startswith("."):
             trigger = text[1:].lower().strip()
             if trigger in shortcuts_db:
@@ -308,7 +317,7 @@ async def handle(client, message: Message):
                         pass
 
     except errors.FloodWait as e:
-        logger.warning(f"FloodWait: sleeping {e.value}s")
+        logger.warning(f"FloodWait hit! Sleeping for {e.value}s")
         await asyncio.sleep(e.value)
     except Exception as e:
         logger.error(f"Handler error: {e}")
