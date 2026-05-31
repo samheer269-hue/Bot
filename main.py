@@ -37,34 +37,18 @@ shortcuts_db = {}
 user_states = {}
 shortcut_stats = {}
 
-async def safe_reply(client, message, text):
-    """Only for pure text command messages — edit in place."""
-    if message.text:
-        try:
-            await message.edit_text(text)
-            return
-        except Exception as e:
-            logger.error(f"Edit failed: {e}")
-    else:
-        try:
-            await message.edit_caption(text)
-            return
-        except Exception as e:
-            logger.error(f"Caption edit failed: {e}")
-    logger.warning("Could not respond — slow mode or media restriction.")
-
-async def safe_confirm(client, chat_id, text):
-    """For confirmations after save/delete — always sends a fresh message."""
+async def reply(message, text):
+    """Edit text message in place. For media, edit caption."""
     try:
-        sent = await client.send_message(chat_id, text)
-        # Auto delete confirmation after 4 seconds
-        await asyncio.sleep(4)
-        await sent.delete()
+        if message.text:
+            await message.edit_text(text)
+        else:
+            await message.edit_caption(text)
     except Exception as e:
-        logger.error(f"Confirm send failed: {e}")
+        logger.error(f"Reply failed: {e}")
 
-async def schedule_send(client, chat_id, shortcut_name, delay_seconds):
-    await asyncio.sleep(delay_seconds)
+async def schedule_send(client, chat_id, shortcut_name, delay):
+    await asyncio.sleep(delay)
     if shortcut_name in shortcuts_db:
         data = shortcuts_db[shortcut_name]
         try:
@@ -75,31 +59,36 @@ async def schedule_send(client, chat_id, shortcut_name, delay_seconds):
             )
             shortcut_stats[shortcut_name] = shortcut_stats.get(shortcut_name, 0) + 1
         except Exception as e:
-            logger.error(f"Scheduled send error: {e}")
+            logger.error(f"Schedule send error: {e}")
 
 @app.on_message()
-async def handle_all_messages(client, message: Message):
+async def handle(client, message: Message):
     if not message.from_user or not message.from_user.is_self:
         return
 
     user_id = message.from_user.id
     chat_id = message.chat.id
-    raw_text = message.text or message.caption or ""
-    text = raw_text.strip()
+    text = (message.text or message.caption or "").strip()
 
-    # --- STATE: WAITING FOR MESSAGE TO SAVE ---
+    # --- SAVE STATE: accept any message (text or media) ---
     if user_id in user_states and user_states[user_id]["action"] == "waiting_for_msg":
         shortcut_name = user_states[user_id]["shortcut_name"]
+        del user_states[user_id]
 
+        # Save the reference
         shortcuts_db[shortcut_name] = {
             "chat_id": message.chat.id,
             "message_id": message.id
         }
         shortcut_stats[shortcut_name] = 0
-        del user_states[user_id]
 
-        # Send fresh confirmation — dont touch saved message
-        asyncio.create_task(safe_confirm(client, chat_id, f"✅ **Saved!** Use `.{shortcut_name}` anywhere."))
+        # Send confirmation as new message, then delete after 3s
+        try:
+            confirm = await client.send_message(chat_id, f"✅ **Saved!** Use `.{shortcut_name}` anywhere.")
+            await asyncio.sleep(3)
+            await confirm.delete()
+        except Exception as e:
+            logger.error(f"Confirm error: {e}")
         return
 
     if not text:
@@ -107,59 +96,57 @@ async def handle_all_messages(client, message: Message):
 
     # --- .alive ---
     if text.lower() == ".alive":
-        await safe_reply(client, message, "✨ **Zyron Userbot** is Active and Running Smoothly!")
+        await reply(message, "✨ **Zyron Userbot** is Active!")
         return
 
     # --- .help ---
     if text.lower() == ".help":
-        help_text = (
+        await reply(message, (
             "🤖 **Zyron Userbot — Commands**\n\n"
-            "`.alive` — Check bot status\n"
-            "`.a <name>` — Create a new shortcut\n"
-            "`.list` — View all shortcuts\n"
-            "`.del <name>` — Delete a shortcut\n"
-            "`.rename <old> <new>` — Rename a shortcut\n"
-            "`.clear` — Delete all shortcuts\n"
-            "`.stats` — View shortcut usage count\n"
-            "`.s <name> <Xs/Xm/Xh>` — Schedule a shortcut\n"
-            "`.block` — Block the replied user\n"
-            "`.c` — Clear current chat history\n"
-            "`.calc <expression>` — Calculator\n"
-            "`.help` — Show this menu\n\n"
-            "**To use a shortcut:** Just type `.name`"
-        )
-        await safe_reply(client, message, help_text)
+            "`.alive` — Status check\n"
+            "`.a <name>` — Save shortcut\n"
+            "`.list` — All shortcuts\n"
+            "`.stats` — Usage count\n"
+            "`.del <name>` — Delete shortcut\n"
+            "`.rename <old> <new>` — Rename shortcut\n"
+            "`.clear` — Clear all shortcuts\n"
+            "`.s <name> <10s/5m/2h>` — Schedule shortcut\n"
+            "`.calc <expr>` — Calculator\n"
+            "`.block` — Block replied user\n"
+            "`.c` — Clear chat history\n"
+            "`.help` — This menu\n\n"
+            "**Shortcut trigger:** Type `.name`"
+        ))
         return
 
     # --- .list ---
     if text.lower() == ".list":
         if not shortcuts_db:
-            msg = "❌ No shortcuts found! Use `.a <name>` to create one."
+            await reply(message, "❌ No shortcuts found! Use `.a <name>` to create one.")
         else:
-            shortcuts_list = "\n".join([f"🔹 `.{k}`" for k in shortcuts_db.keys()])
-            msg = f"📋 **Your Saved Shortcuts ({len(shortcuts_db)}):**\n\n{shortcuts_list}"
-        await safe_reply(client, message, msg)
+            items = "\n".join([f"🔹 `.{k}`" for k in shortcuts_db])
+            await reply(message, f"📋 **Shortcuts ({len(shortcuts_db)}):**\n\n{items}")
         return
 
     # --- .stats ---
     if text.lower() == ".stats":
         if not shortcut_stats:
-            await safe_reply(client, message, "📊 No usage data yet.")
+            await reply(message, "📊 No usage data yet.")
         else:
-            sorted_stats = sorted(shortcut_stats.items(), key=lambda x: x[1], reverse=True)
-            stats_text = "\n".join([f"🔹 `.{k}` — used **{v}** time(s)" for k, v in sorted_stats])
-            await safe_reply(client, message, f"📊 **Shortcut Usage Stats:**\n\n{stats_text}")
+            s = sorted(shortcut_stats.items(), key=lambda x: x[1], reverse=True)
+            txt = "\n".join([f"🔹 `.{k}` — **{v}** use(s)" for k, v in s])
+            await reply(message, f"📊 **Usage Stats:**\n\n{txt}")
         return
 
     # --- .clear ---
     if text.lower() == ".clear":
         count = len(shortcuts_db)
         if count == 0:
-            await safe_reply(client, message, "❌ No shortcuts to clear!")
+            await reply(message, "❌ No shortcuts to clear!")
         else:
             shortcuts_db.clear()
             shortcut_stats.clear()
-            await safe_reply(client, message, f"🗑️ **{count} shortcut(s) deleted!** Database cleared.")
+            await reply(message, f"🗑️ **{count} shortcut(s) cleared!**")
         return
 
     # --- .c (clear chat history) ---
@@ -173,101 +160,84 @@ async def handle_all_messages(client, message: Message):
 
     # --- .block ---
     if text.lower() == ".block":
+        if not message.reply_to_message:
+            await reply(message, "⚠️ Reply to a user to block them.")
+            return
+        target = message.reply_to_message.from_user
+        if not target:
+            await reply(message, "❌ Could not identify user.")
+            return
         try:
-            if not message.reply_to_message:
-                await safe_reply(client, message, "⚠️ Reply to a user's message to block them.")
-                return
-            target_user = message.reply_to_message.from_user
-            if not target_user:
-                await safe_reply(client, message, "❌ Could not identify the user.")
-                return
-            await client.block_user(target_user.id)
-            await safe_reply(client, message, f"🚫 **{target_user.first_name}** has been blocked.")
+            await client.block_user(target.id)
+            await reply(message, f"🚫 **{target.first_name}** blocked.")
         except Exception as e:
             logger.error(f"Block error: {e}")
-            await safe_reply(client, message, "❌ Failed to block user.")
+            await reply(message, "❌ Failed to block.")
         return
 
     # --- .calc ---
     if text.startswith(".calc "):
         try:
-            expression = text.split(" ", 1)[1].strip()
-            allowed = set("0123456789+-*/(). %")
-            if not all(c in allowed for c in expression):
-                await safe_reply(client, message, "❌ Invalid characters in expression.")
+            expr = text.split(" ", 1)[1].strip()
+            if not all(c in "0123456789+-*/(). %" for c in expr):
+                await reply(message, "❌ Invalid characters.")
                 return
-            result = eval(expression, {"__builtins__": {}})
-            await safe_reply(client, message, f"🧮 `{expression}` = **{result}**")
+            result = eval(expr, {"__builtins__": {}})
+            await reply(message, f"🧮 `{expr}` = **{result}**")
         except ZeroDivisionError:
-            await safe_reply(client, message, "❌ Division by zero!")
+            await reply(message, "❌ Division by zero!")
         except Exception:
-            await safe_reply(client, message, "❌ Invalid expression.")
+            await reply(message, "❌ Invalid expression.")
         return
 
     # --- .del <name> ---
     if text.startswith(".del "):
-        try:
-            shortcut_name = text.split(" ", 1)[1].lower().strip()
-            if shortcut_name in shortcuts_db:
-                del shortcuts_db[shortcut_name]
-                shortcut_stats.pop(shortcut_name, None)
-                msg = f"✅ `.{shortcut_name}` deleted successfully."
-            else:
-                msg = f"❌ `.{shortcut_name}` not found!"
-        except Exception as e:
-            logger.error(f"Del error: {e}")
-            msg = "❌ An error occurred."
-        await safe_reply(client, message, msg)
+        name = text.split(" ", 1)[1].lower().strip()
+        if name in shortcuts_db:
+            del shortcuts_db[name]
+            shortcut_stats.pop(name, None)
+            await reply(message, f"✅ `.{name}` deleted.")
+        else:
+            await reply(message, f"❌ `.{name}` not found!")
         return
 
     # --- .rename <old> <new> ---
     if text.startswith(".rename "):
-        try:
-            parts = text.split(" ")
-            if len(parts) < 3:
-                await safe_reply(client, message, "⚠️ Usage: `.rename <old_name> <new_name>`")
-                return
-            old_name = parts[1].lower().strip()
-            new_name = parts[2].lower().strip()
-            if old_name not in shortcuts_db:
-                await safe_reply(client, message, f"❌ `.{old_name}` not found!")
-                return
-            if new_name in shortcuts_db:
-                await safe_reply(client, message, f"❌ `.{new_name}` already exists! Delete it first.")
-                return
-            shortcuts_db[new_name] = shortcuts_db.pop(old_name)
-            if old_name in shortcut_stats:
-                shortcut_stats[new_name] = shortcut_stats.pop(old_name)
-            await safe_reply(client, message, f"✅ `.{old_name}` renamed to `.{new_name}` successfully.")
-        except Exception as e:
-            logger.error(f"Rename error: {e}")
-            await safe_reply(client, message, "❌ An error occurred.")
+        parts = text.split(" ")
+        if len(parts) < 3:
+            await reply(message, "⚠️ Usage: `.rename <old> <new>`")
+            return
+        old, new = parts[1].lower(), parts[2].lower()
+        if old not in shortcuts_db:
+            await reply(message, f"❌ `.{old}` not found!")
+            return
+        if new in shortcuts_db:
+            await reply(message, f"❌ `.{new}` already exists!")
+            return
+        shortcuts_db[new] = shortcuts_db.pop(old)
+        shortcut_stats[new] = shortcut_stats.pop(old, 0)
+        await reply(message, f"✅ `.{old}` → `.{new}`")
         return
 
     # --- .a <name> ---
-    if text.startswith(".a ") or text.startswith("/a "):
-        try:
-            shortcut_name = text.split(" ", 1)[1].lower().strip()
-            user_states[user_id] = {"action": "waiting_for_msg", "shortcut_name": shortcut_name}
-            await safe_reply(client, message, f"📝 **Send the message or photo to save as `.{shortcut_name}`**\n*(Supports photos, media, and formatting)*")
-        except Exception as e:
-            logger.error(f"Add error: {e}")
+    if text.startswith(".a "):
+        name = text.split(" ", 1)[1].lower().strip()
+        user_states[user_id] = {"action": "waiting_for_msg", "shortcut_name": name}
+        await reply(message, f"📝 **Send the message or photo to save as `.{name}`**")
         return
 
     # --- .s <name> <time> ---
     if text.startswith(".s "):
+        parts = text.split(" ")
+        if len(parts) < 3:
+            await reply(message, "⚠️ Usage: `.s <name> <10s/5m/2h>`")
+            return
+        name = parts[1].lower()
+        time_str = parts[2].lower()
+        if name not in shortcuts_db:
+            await reply(message, f"❌ `.{name}` not found!")
+            return
         try:
-            parts = text.split(" ")
-            if len(parts) < 3:
-                await safe_reply(client, message, "⚠️ Usage: `.s <name> <10s / 5m / 2h>`")
-                return
-            shortcut_name = parts[1].lower().strip()
-            time_str = parts[2].lower().strip()
-
-            if shortcut_name not in shortcuts_db:
-                await safe_reply(client, message, f"❌ `.{shortcut_name}` not found!")
-                return
-
             if time_str.endswith("s"):
                 delay = int(time_str[:-1])
             elif time_str.endswith("m"):
@@ -275,39 +245,37 @@ async def handle_all_messages(client, message: Message):
             elif time_str.endswith("h"):
                 delay = int(time_str[:-1]) * 3600
             else:
-                await safe_reply(client, message, "⚠️ Time format: `10s`, `5m`, `2h`")
+                await reply(message, "⚠️ Format: `10s`, `5m`, `2h`")
                 return
-
-            await safe_reply(client, message, f"⏳ `.{shortcut_name}` will be sent in **{time_str}**.")
-            asyncio.create_task(schedule_send(client, chat_id, shortcut_name, delay))
-        except Exception as e:
-            logger.error(f"Schedule error: {e}")
-            await safe_reply(client, message, "❌ An error occurred.")
+            await reply(message, f"⏳ `.{name}` sending in **{time_str}**.")
+            asyncio.create_task(schedule_send(client, chat_id, name, delay))
+        except Exception:
+            await reply(message, "❌ Invalid time.")
         return
 
     # --- SHORTCUT TRIGGER ---
     if text.startswith("."):
-        shortcut_trigger = text[1:].lower().strip()
-        if shortcut_trigger in shortcuts_db:
-            data = shortcuts_db[shortcut_trigger]
-            reply_to_id = message.reply_to_message.id if message.reply_to_message else None
+        trigger = text[1:].lower().strip()
+        if trigger in shortcuts_db:
+            data = shortcuts_db[trigger]
+            reply_to = message.reply_to_message.id if message.reply_to_message else None
             try:
                 await message.delete()
                 await client.copy_message(
                     chat_id=chat_id,
                     from_chat_id=data["chat_id"],
                     message_id=data["message_id"],
-                    reply_to_message_id=reply_to_id
+                    reply_to_message_id=reply_to
                 )
-                shortcut_stats[shortcut_trigger] = shortcut_stats.get(shortcut_trigger, 0) + 1
+                shortcut_stats[trigger] = shortcut_stats.get(trigger, 0) + 1
             except Exception as e:
-                logger.error(f"Shortcut error: {e}")
+                logger.error(f"Trigger error: {e}")
                 try:
-                    await message.edit_text(f"❌ Could not send `.{shortcut_trigger}`. Original message may have been deleted.")
+                    await client.send_message(chat_id, f"❌ Could not send `.{trigger}`. Original may be deleted.")
                 except:
                     pass
-            return
+        return
 
 if __name__ == "__main__":
-    logger.info("Starting Fully Loaded Userbot...")
+    logger.info("Starting Zyron Userbot...")
     app.run()
