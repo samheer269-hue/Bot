@@ -106,11 +106,23 @@ async def handle(client, message: Message):
                 }
                 shortcut_stats[shortcut_name] = 0
                 
-                # Naya text msg send karke confirmation dena fix kiya (Purana delete bug resolved)
-                await client.send_message(chat_id, f"✅ **Saved!** Use `.{shortcut_name}` anywhere.")
+                # --- JADU LOGIC HERE: PHOTO VS TEXT CHECK ---
+                conf_text = f"✅ **Saved!** Use `.{shortcut_name}` anywhere."
+                if message.text:
+                    # Agar sirf text hai toh edit hoga
+                    await message.edit_text(conf_text)
+                else:
+                    # Agar Photo/Video/Media hai toh wo delete hokar naya msg aayega
+                    await message.delete()
+                    await client.send_message(chat_id, conf_text)
+
             except Exception as e:
                 logger.error(f"Save error: {e}")
-                await client.send_message(chat_id, "❌ Failed to save. Try again.")
+                if message.text:
+                    await message.edit_text("❌ Failed to save. Try again.")
+                else:
+                    await message.delete()
+                    await client.send_message(chat_id, "❌ Failed to save. Try again.")
             return
 
         if not text:
